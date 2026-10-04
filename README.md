@@ -60,6 +60,14 @@ Then ask the agent to use the tools. Stop the in-game side any time with
   it in `server.py --token` + `BRIDGE.TOKEN` if you share the machine).
 - **Remote log volume** — ring buffers: 400 entries in-game, 5000 in the hub.
   A heavy session can wrap them; filter early.
+- **Remote log safety (v1.1)** — the `__namecall` hook only queues raw packets;
+  all serialization happens on the sync thread. If an outbound remote ever
+  misbehaves while logging is on, flip the live kill switch:
+  `getgenv().HAVOC_BRIDGE.remoteLog = false` (takes effect for new fires; the
+  rest of the bridge keeps working). Incident log: the v1 hook design silently
+  ate `Match.Deploy` when a second namecall hook layer (Infinite Yield) was
+  loaded in the same session — fixed in v1.1 by removing all instance access
+  and nested calls from inside the hook.
 - **Security** — the hub binds 127.0.0.1 only, and the only credential is the
   token. Anything that can reach localhost and knows the token can run code in
   your game client. Dev place only, don't run this on public servers.
