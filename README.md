@@ -1,0 +1,72 @@
+# Game Bridge — live MCP link into the game
+
+Lets the Copilot agent (or anything speaking MCP) **execute Luau in the live game**
+and **watch remote traffic + state** while it happens.
+
+```
+VS Code / Copilot  <--MCP stdio-->  server.py  <--HTTP 127.0.0.1:8722-->  bridge.luau (in game)
+```
+
+Python **stdlib only** — no pip installs. Works with any executor that has an HTTP
+function (`request` / `http_request`) and a `__namecall` hook for the remote log
+(Volt has both; without the hook everything else still works).
+
+## Setup (2 steps)
+
+1. **Start the MCP server** — VS Code: Command Palette → **MCP: List Servers** →
+   `game-bridge` → **Start**. (Auto-start config lives in `.vscode/mcp.json`,
+   which is local-only; on a fresh machine create it as:)
+
+   ```json
+   {
+     "servers": {
+       "game-bridge": {
+         "type": "stdio",
+         "command": "python",
+         "args": ["${workspaceFolder}/tools/game-bridge/server.py"]
+       }
+     }
+   }
+   ```
+
+   Manual run also works: `python tools/game-bridge/server.py`
+
+2. **Start the in-game bridge** — in the game (Volt), execute:
+
+   ```lua
+   loadstring(game:HttpGet("https://raw.githubusercontent.com/randeyeuhm/havoc-hub/main/bridge.luau"))()
+   ```
+
+Then ask the agent to use the tools. Stop the in-game side any time with
+`getgenv().HAVOC_BRIDGE.alive = false` (re-executing also retires the old one).
+
+## Tools the agent gets
+
+| tool | what it does |
+|---|---|
+| `run_luau` | runs Luau in the live client; returns prints, return value, errors |
+| `state` | latest snapshot: players + attributes, your attrs/char, remote inventory |
+| `remotes` | live remote-call log — `->` FireServer/InvokeServer (via `__namecall`), `<-` OnClientEvent/OnClientInvoke, args serialised, newest first, filterable |
+| `logs` | tail of the game console (print/warn mirrored) |
+| `bridge_status` | connectivity + counters |
+
+## Notes / troubleshooting
+
+- **"game bridge NOT connected"** → the in-game script isn't running, or the hub
+  isn't up. The bridge retries every 0.4s, so just start the missing side.
+- **Port 8722 busy** → a stale hub process is running; kill it (`Get-Process python`)
+  or start both sides with a matching `--port` / `BRIDGE.URL`.
+- **Token** — defaults to `havoc-bridge` on both sides (localhost-only, but change
+  it in `server.py --token` + `BRIDGE.TOKEN` if you share the machine).
+- **Remote log volume** — ring buffers: 400 entries in-game, 5000 in the hub.
+  A heavy session can wrap them; filter early.
+- **Security** — the hub binds 127.0.0.1 only, and the only credential is the
+  token. Anything that can reach localhost and knows the token can run code in
+  your game client. Dev place only, don't run this on public servers.
+
+## Test
+
+```powershell
+python tools/game-bridge/server.py --port 8799 --token smoke   # optional manual
+python tools/game-bridge/smoke_test.py                          # full end-to-end
+```
