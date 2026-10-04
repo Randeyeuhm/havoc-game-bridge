@@ -125,8 +125,10 @@ def tool_remotes(hub: Hub, args: dict):
         arrow = "<-" if e.get("dir") == "in" else "->"
         m = str(e.get("m") or ("OnClientEvent" if e.get("dir") == "in" else "FireServer"))
         a_s = ", ".join(str(a) for a in (e.get("args") or []))
+        org = str(e.get("origin") or "")
+        by = f" by {org}" if org else ""
         tt = time.strftime("%H:%M:%S", time.localtime(e.get("t") or 0))
-        out.append(f"[{tt}] {arrow} {m} {name} ({path}) :: {a_s}"[:400])
+        out.append(f"[{tt}] {arrow} {m} {name} ({path}){by} :: {a_s}"[:400])
         if len(out) >= limit:
             break
     if not out:

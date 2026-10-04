@@ -71,7 +71,10 @@ Then ask the agent to use the tools. Stop the in-game side any time with
 - **Live remote discovery (v1.2)** — remotes are watched the moment they appear
   anywhere in the tree (`game.DescendantAdded` + one async full sweep +
   `getnilinstances()`), not just the ones under `ReplicatedStorage` at boot.
-  Pattern adopted from the proven Dex RemoteSpy plugin.
+  Same pattern as the Dex RemoteSpy and Cobalt builds.
+- **Caller attribution (v1.3)** — outbound entries include the script that
+  fired them (`getcallingscript`, captured in the hook exactly like Cobalt
+  does), shown as `by <script>` in the `remotes` tool.
 - **Security** — the hub binds 127.0.0.1 only, and the only credential is the
   token. Anything that can reach localhost and knows the token can run code in
   your game client. Dev place only, don't run this on public servers.
