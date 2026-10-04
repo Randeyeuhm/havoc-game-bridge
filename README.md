@@ -75,6 +75,10 @@ Then ask the agent to use the tools. Stop the in-game side any time with
 - **Caller attribution (v1.3)** — outbound entries include the script that
   fired them (`getcallingscript`, captured in the hook exactly like Cobalt
   does), shown as `by <script>` in the `remotes` tool.
+- **Crash-proofing (v1.4)** — non-finite numbers (`nan`/`inf`, common in
+  Criminality-style games) can no longer kill the sync loop: finite guards in
+  the state builder and serializer, the state build is pcall'd, and an encode
+  failure strips the state and keeps syncing instead of dying.
 - **Security** — the hub binds 127.0.0.1 only, and the only credential is the
   token. Anything that can reach localhost and knows the token can run code in
   your game client. Dev place only, don't run this on public servers.
