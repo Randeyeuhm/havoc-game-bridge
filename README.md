@@ -68,6 +68,10 @@ Then ask the agent to use the tools. Stop the in-game side any time with
   ate `Match.Deploy` when a second namecall hook layer (Infinite Yield) was
   loaded in the same session — fixed in v1.1 by removing all instance access
   and nested calls from inside the hook.
+- **Live remote discovery (v1.2)** — remotes are watched the moment they appear
+  anywhere in the tree (`game.DescendantAdded` + one async full sweep +
+  `getnilinstances()`), not just the ones under `ReplicatedStorage` at boot.
+  Pattern adopted from the proven Dex RemoteSpy plugin.
 - **Security** — the hub binds 127.0.0.1 only, and the only credential is the
   token. Anything that can reach localhost and knows the token can run code in
   your game client. Dev place only, don't run this on public servers.
