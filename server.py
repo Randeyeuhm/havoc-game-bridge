@@ -32,16 +32,41 @@ class Hub:
     def __init__(self, token: str) -> None:
         self.token = token
         self.lock = threading.Lock()
-        self.cmds: list = []                      # commands queued for the game
+        self.cmds: list = []                      # commands queued for games
         self.waiters: dict = {}                   # cmd id -> threading.Event
         self.results: dict = {}                   # cmd id -> result dict
-        self.logs: deque = deque(maxlen=2000)     # console lines from the game
+        self.logs: deque = deque(maxlen=2000)     # console lines (tagged)
         self.remotes: deque = deque(maxlen=5000)  # remote call log entries
-        self.state = None                         # last state snapshot dict
+        self.state = None                         # last state snapshot (newest session)
         self.state_at = 0.0
-        self.hello = None                         # bridge hello payload
+        self.hello = None                         # newest hello payload
         self.last_sync = 0.0
         self.sync_count = 0
+        # v1.1 multi-session: keyed by bridge id ("job|player")
+        self.sessions: dict = {}
+
+    def sess(self, sid: str) -> dict:
+        s = self.sessions.get(sid)
+        if s is None:
+            s = {"id": sid, "hello": None, "state": None, "state_at": 0.0,
+                 "last_sync": 0.0, "syncs": 0}
+            self.sessions[sid] = s
+        return s
+
+    def prune_sessions(self, now: float) -> None:
+        for k in [k for k, s in self.sessions.items() if now - s["last_sync"] > 600]:
+            del self.sessions[k]
+
+    def default_sid(self) -> str:
+        best, bt = "", -1.0
+        for k, s in self.sessions.items():
+            if s["last_sync"] > bt:
+                best, bt = k, s["last_sync"]
+        return best
+
+    @staticmethod
+    def short_sid(sid: str) -> str:
+        return sid.split("|")[-1] if "|" in sid else sid
 
     def connected(self) -> bool:
         return self.last_sync > 0 and (time.time() - self.last_sync) < CONNECT_WINDOW_S
@@ -54,6 +79,20 @@ def tool_run_luau(hub: Hub, args: dict):
     code = args.get("code")
     if not isinstance(code, str) or not code.strip():
         return ("run_luau needs a non-empty 'code' string", True)
+    with hub.lock:
+        sids = list(hub.sessions.keys())
+        live = [x for x in sids if hub.sessions[x]["last_sync"] and (time.time() - hub.sessions[x]["last_sync"]) < CONNECT_WINDOW_S]
+    target = args.get("session")
+    if isinstance(target, str) and target:
+        matches = [x for x in live if target in x]
+        if not matches:
+            return (f"no live session matching '{target}' (live: {', '.join(live) or 'none'})", True)
+        target = matches[0]
+    elif len(live) > 1:
+        return ("multiple live sessions - pass 'session' (a player name) to target one:\n"
+                + "\n".join("  " + x for x in live), True)
+    else:
+        target = None
     if not hub.connected():
         return (
             "game bridge NOT connected.\n"
@@ -72,7 +111,7 @@ def tool_run_luau(hub: Hub, args: dict):
     ev = threading.Event()
     with hub.lock:
         hub.waiters[cid] = ev
-        hub.cmds.append({"id": cid, "kind": "eval", "code": code})
+        hub.cmds.append({"id": cid, "kind": "eval", "code": code, "target": target})
     got = ev.wait(timeout)
     with hub.lock:
         hub.waiters.pop(cid, None)
@@ -93,15 +132,28 @@ def tool_run_luau(hub: Hub, args: dict):
 
 
 def tool_state(hub: Hub, args: dict):
+    want = args.get("session")
     with hub.lock:
-        st = hub.state
-        at = hub.state_at
+        sids = list(hub.sessions.keys())
+        if isinstance(want, str) and want:
+            matches = [x for x in sids if want in x]
+            if not matches:
+                return (f"no session matching '{want}' (known: {', '.join(sids) or 'none'})", True)
+            sid = matches[0]
+        else:
+            sid = hub.default_sid()
+        s = hub.sessions.get(sid) or {}
+        st = s.get("state")
+        at = s.get("state_at") or 0.0
         conn = hub.connected()
+    extra = ""
+    if len(sids) > 1:
+        extra = "\n# sessions: " + ", ".join(sids)
     if st is None:
-        return ("no state snapshot yet - is the in-game bridge running and syncing?", True)
+        return (f"no state snapshot yet for session '{sid or '?'}'{extra}", True)
     text = json.dumps(st, indent=2, ensure_ascii=False)
     age = time.time() - at if at else -1
-    header = f"# state (uploaded {age:.1f}s ago, connected={conn})\n"
+    header = f"# state [{sid}] (uploaded {age:.1f}s ago, connected={conn}){extra}\n"
     if len(text) > 24000:
         text = text[:24000] + "\n... (truncated - use run_luau for targeted slices)"
     return (header + text, False)
@@ -109,6 +161,7 @@ def tool_state(hub: Hub, args: dict):
 
 def tool_remotes(hub: Hub, args: dict):
     filt = str(args.get("filter") or "").lower()
+    sess = str(args.get("session") or "").lower()
     try:
         limit = int(args.get("limit") or 40)
     except (TypeError, ValueError):
@@ -120,6 +173,9 @@ def tool_remotes(hub: Hub, args: dict):
     for e in reversed(items):
         name = str(e.get("name") or "")
         path = str(e.get("path") or "")
+        src = str(e.get("src") or "")
+        if sess and sess not in src.lower():
+            continue
         if filt and filt not in name.lower() and filt not in path.lower():
             continue
         arrow = "<-" if e.get("dir") == "in" else "->"
@@ -127,8 +183,9 @@ def tool_remotes(hub: Hub, args: dict):
         a_s = ", ".join(str(a) for a in (e.get("args") or []))
         org = str(e.get("origin") or "")
         by = f" by {org}" if org else ""
+        tag = f"[{src.split('|')[-1]}] " if src else ""
         tt = time.strftime("%H:%M:%S", time.localtime(e.get("t") or 0))
-        out.append(f"[{tt}] {arrow} {m} {name} ({path}){by} :: {a_s}"[:400])
+        out.append(f"{tag}[{tt}] {arrow} {m} {name} ({path}){by} :: {a_s}"[:420])
         if len(out) >= limit:
             break
     if not out:
@@ -142,11 +199,28 @@ def tool_logs(hub: Hub, args: dict):
     except (TypeError, ValueError):
         limit = 60
     limit = max(1, min(limit, 400))
+    sess = str(args.get("session") or "").lower()
     with hub.lock:
         items = list(hub.logs)
+    if sess:
+        items = [x for x in items if sess in x.lower()]
     if not items:
         return ("no console output captured yet", False)
     return ("(oldest first, last %d)\n" % min(limit, len(items)) + "\n".join(items[-limit:]), False)
+
+
+def tool_sessions(hub: Hub, args: dict):
+    now = time.time()
+    with hub.lock:
+        rows = []
+        for sid, s in sorted(hub.sessions.items(), key=lambda kv: -kv[1]["last_sync"]):
+            live = (now - s["last_sync"]) < CONNECT_WINDOW_S if s["last_sync"] else False
+            st_age = ("%0.1fs ago" % (now - s["state_at"])) if s["state_at"] else "none"
+            rows.append(f"{sid}  {'LIVE' if live else 'idle'}\n"
+                        f"    last sync: {now - s['last_sync']:.1f}s ago | syncs: {s['syncs']} | state: {st_age}")
+    if not rows:
+        return ("no sessions yet", False)
+    return ("sessions (newest first):\n" + "\n".join(rows), False)
 
 
 def tool_bridge_status(hub: Hub, args: dict):
@@ -161,7 +235,13 @@ def tool_bridge_status(hub: Hub, args: dict):
             "remotes": len(hub.remotes),
             "queued_cmds": len(hub.cmds),
             "waiters": len(hub.waiters),
+            "sessions": len(hub.sessions),
         }
+        sess_lines = []
+        now = time.time()
+        for sid, s in sorted(hub.sessions.items(), key=lambda kv: -kv[1]["last_sync"]):
+            live = (now - s["last_sync"]) < CONNECT_WINDOW_S if s["last_sync"] else False
+            sess_lines.append(f"  {'[LIVE]' if live else '[idle]'} {sid}")
     lines = ["bridge connected: " + str(conn)]
     if age is not None:
         lines.append(f"last sync: {age:.2f}s ago")
@@ -170,6 +250,9 @@ def tool_bridge_status(hub: Hub, args: dict):
         lines.append(f"state age: {time.time() - st_at:.1f}s")
     if hello:
         lines.append("hello: " + json.dumps(hello, ensure_ascii=False))
+    if sess_lines:
+        lines.append("sessions:")
+        lines.extend(sess_lines)
     if not conn:
         lines.append("TIP: execute bridge.luau in the game and keep this server running")
     return ("\n".join(lines), False)
@@ -186,6 +269,8 @@ def dispatch(hub: Hub, name: str, args: dict):
         return tool_logs(hub, args)
     if name == "bridge_status":
         return tool_bridge_status(hub, args)
+    if name == "sessions":
+        return tool_sessions(hub, args)
     return ("unknown tool: " + str(name), True)
 
 
@@ -195,44 +280,58 @@ TOOL_DEFS = [
         "description": (
             "Execute Luau in the LIVE game via the game bridge and return captured prints, the "
             "return value and any error. Runs client-side in the executor (getgenv) context. "
-            "Use 'return ...' to send values back; keep snippets small and watch side effects."
+            "Use 'return ...' to send values back; keep snippets small and watch side effects. "
+            "With multiple sessions connected, pass 'session' (player name) to target one."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "code": {"type": "string", "description": "Luau source to execute."},
                 "timeout_ms": {"type": "number", "description": "Wait for the result, default 20000."},
+                "session": {"type": "string", "description": "Target session (player name substring). Required when multiple bridges are live."},
             },
             "required": ["code"],
         },
     },
     {
         "name": "state",
-        "description": "Latest live state snapshot uploaded by the game bridge (players, attributes, remotes inventory).",
-        "inputSchema": {"type": "object", "properties": {}},
+        "description": "Latest live state snapshot uploaded by the game bridge (players, attributes, remotes inventory). Optional 'session' selects one bridge.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"session": {"type": "string", "description": "Session (player name substring); default = most recently active."}},
+        },
     },
     {
         "name": "remotes",
-        "description": "Recent remote-call log: outbound FireServer/InvokeServer (->) and inbound OnClientEvent/OnClientInvoke (<-), newest first.",
+        "description": "Recent remote-call log: outbound FireServer/InvokeServer (->) and inbound OnClientEvent/OnClientInvoke (<-), newest first. Entries are tagged with the source session.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "filter": {"type": "string", "description": "Case-insensitive substring filter on remote name/path."},
+                "session": {"type": "string", "description": "Only entries from this session (player name substring)."},
                 "limit": {"type": "number", "description": "Max entries, default 40."},
             },
         },
     },
     {
         "name": "logs",
-        "description": "Tail of the game console (print/warn, mirrored by the bridge).",
+        "description": "Tail of the game console (print/warn, mirrored by the bridge). Lines are tagged with the source session.",
         "inputSchema": {
             "type": "object",
-            "properties": {"limit": {"type": "number", "description": "Max lines, default 60."}},
+            "properties": {
+                "limit": {"type": "number", "description": "Max lines, default 60."},
+                "session": {"type": "string", "description": "Only lines from this session (player name substring)."},
+            },
         },
     },
     {
         "name": "bridge_status",
-        "description": "Bridge connectivity + counters (sync age, captured logs/remotes, pending commands).",
+        "description": "Bridge connectivity + counters (sync age, captured logs/remotes, pending commands) and the list of connected sessions.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "sessions",
+        "description": "List all bridge sessions (multi-instance aware): id, live/idle, last sync age, sync count, state age.",
         "inputSchema": {"type": "object", "properties": {}},
     },
 ]
@@ -300,20 +399,31 @@ class Handler(BaseHTTPRequestHandler):
     def _sync(self, data: dict):
         hub = self.hub
         now = time.time()
+        sid = data.get("id")
+        if not isinstance(sid, str) or not sid:
+            sid = "default"
+        tag = hub.short_sid(sid)
         with hub.lock:
             hub.last_sync = now
             hub.sync_count += 1
+            s = hub.sess(sid)
+            s["last_sync"] = now
+            s["syncs"] += 1
             if isinstance(data.get("hello"), dict):
+                s["hello"] = data["hello"]
                 hub.hello = data["hello"]
             if isinstance(data.get("state"), dict):
+                s["state"] = data["state"]
+                s["state_at"] = now
                 hub.state = data["state"]
                 hub.state_at = now
             for entry in data.get("logs") or []:
                 if isinstance(entry, str):
-                    hub.logs.append(entry)
+                    hub.logs.append(f"[{tag}] {entry}")
             for entry in data.get("remotes") or []:
                 if isinstance(entry, dict):
                     entry["t"] = now
+                    entry["src"] = sid
                     hub.remotes.append(entry)
             for res in data.get("results") or []:
                 if not isinstance(res, dict):
@@ -323,9 +433,16 @@ class Handler(BaseHTTPRequestHandler):
                 if ev is not None:
                     hub.results[cid] = res
                     ev.set()
-            cmds = hub.cmds
-            hub.cmds = []
-        self._json(200, {"ok": True, "cmds": cmds})
+            out_cmds, keep = [], []
+            for c in hub.cmds:
+                tgt = c.get("target")
+                if tgt is None or tgt == sid:
+                    out_cmds.append(c)
+                else:
+                    keep.append(c)
+            hub.cmds = keep
+            hub.prune_sessions(now)
+        self._json(200, {"ok": True, "cmds": out_cmds})
 
 
 # ----------------------------------------------------------------------------
