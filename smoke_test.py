@@ -191,7 +191,8 @@ def main():
 
         # 6b) REST reads: /logs /remotes /state /sessions
         def get_text(path):
-            with urllib.request.urlopen(f"http://127.0.0.1:{PORT}{path}", timeout=5) as r:
+            sep = "&" if "?" in path else "?"
+            with urllib.request.urlopen(f"http://127.0.0.1:{PORT}{path}{sep}token={TOKEN}", timeout=5) as r:
                 return json.loads(r.read().decode("utf-8")).get("text", "")
 
         if "[smoke] hello from jobA|Alice" not in get_text("/logs?limit=10"):
@@ -202,6 +203,47 @@ def main():
             problems.append("/state REST missing state")
         if "Alice" not in get_text("/sessions"):
             problems.append("/sessions REST missing session")
+
+        # 6c) REST auth: /logs without token -> 401; blocked Origin -> 403; /health stays open
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{PORT}/logs", timeout=5)
+            problems.append("/logs without token was not rejected")
+        except urllib.error.HTTPError as e:
+            if e.code != 401:
+                problems.append(f"/logs without token: expected 401, got {e.code}")
+        req = urllib.request.Request(f"http://127.0.0.1:{PORT}/health",
+                                     headers={"Origin": "https://evil.example"})
+        try:
+            urllib.request.urlopen(req, timeout=5)
+            problems.append("blocked origin was not rejected")
+        except urllib.error.HTTPError as e:
+            if e.code != 403:
+                problems.append(f"blocked origin: expected 403, got {e.code}")
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/health", timeout=5) as r:
+                if not json.loads(r.read().decode("utf-8")).get("ok"):
+                    problems.append("/health not ok without token")
+        except Exception as exc:
+            problems.append("/health open check failed: " + repr(exc))
+
+        # 6d) /eval with a local file + latency fields in /health
+        tmpf = os.path.join(HERE, "_smoke_eval_file.luau")
+        with open(tmpf, "w", encoding="utf-8") as fh:
+            fh.write("return 'file-code'")
+        try:
+            sc, body = http_post("/eval", {"token": TOKEN, "file": tmpf, "timeout_ms": 5000})
+            if sc != 200 or "42:" not in json.dumps(body):
+                problems.append(f"/eval file param failed: {sc} {body}")
+            if "return 'file-code'" not in a.executed:
+                problems.append("/eval file content never reached client A")
+        finally:
+            try:
+                os.remove(tmpf)
+            except OSError:
+                pass
+        h = http_get("/health")
+        if h.get("eval_ms_last") is None or h.get("eval_ms_avg") is None:
+            problems.append("health missing eval_ms fields")
 
         # ---- SECOND session joins ----
         b = FakeGame("jobB|Bob", executor="smoke2").start()

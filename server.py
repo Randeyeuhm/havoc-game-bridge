@@ -22,7 +22,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
-VERSION = "bridge-1.1.1"
+VERSION = "bridge-1.2.0"
 CONNECT_WINDOW_S = 5.0
 
 
@@ -38,6 +38,7 @@ class Hub:
         self.results: dict = {}                   # cmd id -> result dict
         self.logs: deque = deque(maxlen=2000)     # console lines (tagged)
         self.remotes: deque = deque(maxlen=5000)  # remote call log entries
+        self.eval_ms: deque = deque(maxlen=20)    # recent eval round trips (ms)
         self.state = None                         # last state snapshot (newest session)
         self.state_at = 0.0
         self.hello = None                         # newest hello payload
@@ -78,8 +79,15 @@ class Hub:
 # ----------------------------------------------------------------------------
 def tool_run_luau(hub: Hub, args: dict):
     code = args.get("code")
+    src_path = args.get("file")
+    if isinstance(src_path, str) and src_path.strip():
+        try:
+            with open(src_path, "r", encoding="utf-8") as fh:
+                code = fh.read()
+        except OSError as exc:
+            return (f"could not read file '{src_path}': {exc}", True)
     if not isinstance(code, str) or not code.strip():
-        return ("run_luau needs a non-empty 'code' string", True)
+        return ("run_luau needs a non-empty 'code' string (or a readable 'file')", True)
     with hub.lock:
         sids = list(hub.sessions.keys())
         live = [x for x in sids if hub.sessions[x]["last_sync"] and (time.time() - hub.sessions[x]["last_sync"]) < CONNECT_WINDOW_S]
@@ -116,8 +124,11 @@ def tool_run_luau(hub: Hub, args: dict):
     with hub.lock:
         hub.waiters[cid] = ev
         hub.cmds.append({"id": cid, "kind": "eval", "code": code, "target": target})
+    t0 = time.time()
     got = ev.wait(timeout)
+    elapsed_ms = (time.time() - t0) * 1000.0
     with hub.lock:
+        hub.eval_ms.append(elapsed_ms)
         hub.waiters.pop(cid, None)
         res = hub.results.pop(cid, None)
         if not got:
@@ -131,6 +142,7 @@ def tool_run_luau(hub: Hub, args: dict):
             parts.append("result: " + str(res.get("out")))
         else:
             parts.append("error: " + str(res.get("err")))
+        parts.append("round trip: %.0f ms" % elapsed_ms)
         return ("\n".join(parts) or "(no output)", False)
     return (f"no result within {timeout:.1f}s - the code may still be running, or the bridge went offline", True)
 
@@ -241,6 +253,7 @@ def tool_bridge_status(hub: Hub, args: dict):
             "waiters": len(hub.waiters),
             "sessions": len(hub.sessions),
         }
+        eval_ms = list(hub.eval_ms)
         sess_lines = []
         now = time.time()
         for sid, s in sorted(hub.sessions.items(), key=lambda kv: -kv[1]["last_sync"]):
@@ -250,6 +263,8 @@ def tool_bridge_status(hub: Hub, args: dict):
     if age is not None:
         lines.append(f"last sync: {age:.2f}s ago")
     lines.append("counters: " + json.dumps(counts))
+    if eval_ms:
+        lines.append("evals: last %.0f ms, avg %.0f ms (n=%d)" % (eval_ms[-1], sum(eval_ms) / len(eval_ms), len(eval_ms)))
     if st_at:
         lines.append(f"state age: {time.time() - st_at:.1f}s")
     if hello:
@@ -285,16 +300,18 @@ TOOL_DEFS = [
             "Execute Luau in the LIVE game via the game bridge and return captured prints, the "
             "return value and any error. Runs client-side in the executor (getgenv) context. "
             "Use 'return ...' to send values back; keep snippets small and watch side effects. "
+            "Alternatively pass 'file' (a local .luau path) instead of 'code'. "
             "With multiple sessions connected, pass 'session' (player name) to target one."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "code": {"type": "string", "description": "Luau source to execute."},
+                "file": {"type": "string", "description": "Optional path to a local .luau file - its contents run instead of 'code'."},
                 "timeout_ms": {"type": "number", "description": "Wait for the result, default 20000."},
                 "session": {"type": "string", "description": "Target session (player name substring). Required when multiple bridges are live."},
             },
-            "required": ["code"],
+            "required": [],
         },
     },
     {
@@ -358,6 +375,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _origin_ok(self, origin: str) -> bool:
+        return (origin.startswith("http://127.0.0.1") or origin.startswith("http://localhost")
+                or origin.startswith("vscode-webview") or origin.startswith("vscode-file"))
+
+    def _token_ok(self, qtok: str) -> bool:
+        if qtok == self.hub.token:
+            return True
+        return self.headers.get("X-Havoc-Token") == self.hub.token
+
     def do_GET(self):
         parsed = urlsplit(self.path)
         path = parsed.path
@@ -366,6 +392,14 @@ class Handler(BaseHTTPRequestHandler):
         def q(name, default=""):
             vals = qs.get(name) or []
             return vals[0] if vals else default
+
+        origin = self.headers.get("Origin")
+        if origin and not self._origin_ok(origin):
+            self._json(403, {"ok": False, "error": "origin blocked"})
+            return
+        if path != "/health" and not self._token_ok(q("token")):
+            self._json(401, {"ok": False, "error": "bad token"})
+            return
 
         if path == "/health":
             hub = self.hub
@@ -390,6 +424,8 @@ class Handler(BaseHTTPRequestHandler):
                     "queued_cmds": len(hub.cmds),
                     "live_sessions": live_n,
                     "sessions": rows,
+                    "eval_ms_last": round(hub.eval_ms[-1], 1) if hub.eval_ms else None,
+                    "eval_ms_avg": round(sum(hub.eval_ms) / len(hub.eval_ms), 1) if hub.eval_ms else None,
                 }
             self._json(200, info)
         elif path == "/logs":
@@ -412,6 +448,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"ok": False, "error": "unknown path"})
 
     def do_POST(self):
+        origin = self.headers.get("Origin")
+        if origin and not self._origin_ok(origin):
+            self._json(403, {"ok": False, "error": "origin blocked"})
+            return
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -431,7 +471,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/eval":
             text, is_err = tool_run_luau(
                 self.hub,
-                {"code": data.get("code", ""), "timeout_ms": data.get("timeout_ms", 20000),
+                {"code": data.get("code", ""), "file": data.get("file"),
+                 "timeout_ms": data.get("timeout_ms", 20000),
                  "session": data.get("session")},
             )
             self._json(200, {"ok": not is_err, "text": text})

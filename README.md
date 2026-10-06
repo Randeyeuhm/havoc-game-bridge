@@ -48,7 +48,7 @@ Then ask the agent to use the tools. Stop the in-game side any time with
 
 | tool | what it does |
 |---|---|
-| `run_luau` | runs Luau in the live client; returns prints, return value, errors |
+| `run_luau` | runs Luau in the live client (or a local `.luau` via `file`); returns prints, return value, errors, round-trip ms |
 | `state` | latest snapshot: players + attributes, your attrs/char, remote inventory |
 | `remotes` | live remote-call log — `->` FireServer/InvokeServer (via `__namecall`), `<-` OnClientEvent/OnClientInvoke, args serialised, newest first, filterable |
 | `logs` | tail of the game console (print/warn mirrored) |
@@ -57,12 +57,23 @@ Then ask the agent to use the tools. Stop the in-game side any time with
 
 ## REST (for scripts / no-MCP clients)
 
-- `GET /health` — `ok`, `connected`, `last_sync_age_s`, `syncs`, `queued_cmds`, `live_sessions`, `sessions[]`
-- `POST /eval` — body `{"token": "...", "code": "...", "timeout_ms": 20000, "session": "Alice"}` — same code path as `run_luau`; `session` targets one client when several are live
-- `GET /logs?limit=60&session=` — tail of the mirrored console (print/warn) — same as the `logs` tool
-- `GET /remotes?filter=&session=&limit=40` — remote-call log — same as the `remotes` tool
-- `GET /state?session=` — latest state snapshot — same as the `state` tool
-- `GET /sessions` — connected bridge sessions — same as the `sessions` tool
+- `GET /health` — **open** (no token): `ok`, `connected`, `last_sync_age_s`, `syncs`, `queued_cmds`, `live_sessions`, `sessions[]`, `eval_ms_last`, `eval_ms_avg`
+- `POST /eval` — body `{"token": "...", "code": "...", "timeout_ms": 20000, "session": "Alice", "file": "C:/path/x.luau"}` — same code path as `run_luau`; `session` targets one client when several are live; `file` runs a local `.luau` file's contents instead of `code`. Responses end with `round trip: <n> ms`.
+- `GET /logs?limit=60&session=&token=…` — tail of the mirrored console (print/warn) — same as the `logs` tool
+- `GET /remotes?filter=&session=&limit=40&token=…` — remote-call log — same as the `remotes` tool
+- `GET /state?session=&token=…` — latest state snapshot — same as the `state` tool
+- `GET /sessions?token=…` — connected bridge sessions — same as the `sessions` tool
+- **Auth:** every GET except `/health` requires the token (`?token=` or `X-Havoc-Token` header); requests carrying a foreign `Origin` are rejected (403) — a browser page cannot read the bridge.
+
+## Game-side kit (bridge v2.5.0, in-game script)
+
+- **Spy pack** — `HAVOC_BRIDGE.spy.byName(name, limit)` (filter the ring), `spy.dump([path], [nameFilter])` (**writes the ring to a workspace file** — read it from disk, no console paste; binary strings come out hexed), `spy.hex(s)` for buffer payloads, `raw(i)` / `replay(i)` as before.
+- **Watch** — `HAVOC_BRIDGE.watch(instanceOrPath, seconds, interval)` samples properties + attributes and returns a diff log ("what changes when I do X"). Blocks the call: give the eval a matching `timeout_ms`.
+- **Teleport persistence** — the bridge re-queues itself (`queueonteleport`) so it survives server hops (lobby → match, races). Disable with `getgenv().HAVOC_BRIDGE_PERSIST = false`; status in `HAVOC_BRIDGE.persist`.
+- **Console + async rings** — `HAVOC_BRIDGE.console` (last 150 print/warn/[bridge] lines) and `HAVOC_BRIDGE.asyncErrors` (errors from eval-spawned `task.spawn/defer/delay`, zero writes to the real task table — shadow-task prefix).
+- **Eval hardening** — `evalResults` (last 10 results, recoverable if a post is lost), `evalsDone` / `lastExecMs` / `droppedResults` counters, chunk name `@bridge_eval` in error traces.
+- **Adaptive polling** — fast ticks (~0.12 s) for a few seconds after any command → eval round trips ~0.3 s while active, 0.45 s idle.
+- **Caps map** — `state.health.caps`: 24 executor capabilities probed at boot (readfile, hookmetamethod, getgc, queueonteleport, ...), so you know a game's abilities at a glance.
 
 ## Notes / troubleshooting
 
