@@ -21,7 +21,7 @@ import uuid
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "bridge-1.0.0"
+VERSION = "bridge-1.1.0"
 CONNECT_WINDOW_S = 5.0
 
 
@@ -87,6 +87,9 @@ def tool_run_luau(hub: Hub, args: dict):
         matches = [x for x in live if target in x]
         if not matches:
             return (f"no live session matching '{target}' (live: {', '.join(live) or 'none'})", True)
+        if len(matches) > 1:
+            return ("session '" + target + "' matches " + str(len(matches)) +
+                    " live sessions - narrow it down:\n" + "\n".join("  " + x for x in matches), True)
         target = matches[0]
     elif len(live) > 1:
         return ("multiple live sessions - pass 'session' (a player name) to target one:\n"
@@ -358,13 +361,27 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path == "/health":
             hub = self.hub
+            now = time.time()
             with hub.lock:
+                hub.prune_sessions(now)
+                rows, live_n = [], 0
+                for sid, s in sorted(hub.sessions.items(), key=lambda kv: -kv[1]["last_sync"])[:10]:
+                    is_live = bool(s["last_sync"]) and (now - s["last_sync"]) < CONNECT_WINDOW_S
+                    if is_live:
+                        live_n += 1
+                    rows.append({
+                        "id": hub.short_sid(sid),
+                        "age_s": round(now - s["last_sync"], 1) if s["last_sync"] else None,
+                        "live": is_live,
+                    })
                 info = {
                     "ok": True,
                     "connected": hub.connected(),
-                    "last_sync_age_s": round(time.time() - hub.last_sync, 3) if hub.last_sync else None,
+                    "last_sync_age_s": round(now - hub.last_sync, 3) if hub.last_sync else None,
                     "syncs": hub.sync_count,
                     "queued_cmds": len(hub.cmds),
+                    "live_sessions": live_n,
+                    "sessions": rows,
                 }
             self._json(200, info)
         else:
@@ -390,7 +407,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/eval":
             text, is_err = tool_run_luau(
                 self.hub,
-                {"code": data.get("code", ""), "timeout_ms": data.get("timeout_ms", 20000)},
+                {"code": data.get("code", ""), "timeout_ms": data.get("timeout_ms", 20000),
+                 "session": data.get("session")},
             )
             self._json(200, {"ok": not is_err, "text": text})
         else:

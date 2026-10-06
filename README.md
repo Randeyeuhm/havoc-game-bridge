@@ -53,17 +53,34 @@ Then ask the agent to use the tools. Stop the in-game side any time with
 | `remotes` | live remote-call log — `->` FireServer/InvokeServer (via `__namecall`), `<-` OnClientEvent/OnClientInvoke, args serialised, newest first, filterable |
 | `logs` | tail of the game console (print/warn mirrored) |
 | `bridge_status` | connectivity + counters |
+| `sessions` | list every bridge session (multi-instance aware): id, live/idle, last sync age, syncs, state age |
+
+## REST (for scripts / no-MCP clients)
+
+- `GET /health` — `ok`, `connected`, `last_sync_age_s`, `syncs`, `queued_cmds`, `live_sessions`, `sessions[]`
+- `POST /eval` — body `{"token": "...", "code": "...", "timeout_ms": 20000, "session": "Alice"}` — same code path as `run_luau`; `session` targets one client when several are live
 
 ## Notes / troubleshooting
 
 - **"game bridge NOT connected"** → the in-game script isn't running, or the hub
   isn't up. The bridge retries every 0.4s, so just start the missing side.
 - **Port 8722 busy** → a stale hub process is running; kill it (`Get-Process python`)
-  or start both sides with a matching `--port` / `BRIDGE.URL`.
+  or run the hub on another port (`--port 8799`) and point the bridge at it with
+  `getgenv().HAVOC_BRIDGE_URL = "http://127.0.0.1:8799"` before re-running it (v2.4.4).
 - **Token** — defaults to `havoc-bridge` on both sides (localhost-only, but change
-  it in `server.py --token` + `BRIDGE.TOKEN` if you share the machine).
-- **Remote log volume** — ring buffers: 400 entries in-game, 5000 in the hub.
-  A heavy session can wrap them; filter early.
+  it in `server.py --token` + the in-game override `getgenv().HAVOC_BRIDGE_TOKEN`
+  if you share the machine).
+- **Remote log volume** — in-game caps: 80-entry replay ring + 500 queued remotes
+  + 400 queued logs; hub rings: 5000 remotes / 2000 logs. A heavy session wraps
+  them; filter early.
+- **Multi-session** — several clients can sync to one hub at once; tools take
+  `session` (player-name substring). Untargeted calls refuse when more than one
+  client is live, and ambiguous names are rejected with the match list. `sessions`
+  (tool) or `/health` (REST) shows who is connected.
+- **Endpoint overrides (v2.4.4)** — the in-game bridge reads
+  `getgenv().HAVOC_BRIDGE_URL` and `getgenv().HAVOC_BRIDGE_TOKEN` at boot; set
+  them before running to point at a non-default port / second hub / custom token
+  without editing any file.
 - **Remote log safety (v1.1)** — the `__namecall` hook only queues raw packets;
   all serialization happens on the sync thread. If an outbound remote ever
   misbehaves while logging is on, flip the live kill switch:
