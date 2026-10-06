@@ -22,6 +22,13 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
+try:
+    import screenshot as shotmod
+    HAS_SHOT = True
+except Exception:  # missing module / non-Windows host
+    shotmod = None
+    HAS_SHOT = False
+
 VERSION = "bridge-1.2.0"
 CONNECT_WINDOW_S = 5.0
 
@@ -225,6 +232,41 @@ def tool_logs(hub: Hub, args: dict):
     return ("(oldest first, last %d)\n" % min(limit, len(items)) + "\n".join(items[-limit:]), False)
 
 
+def _toint(v, default=0):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def tool_screenshot(hub: Hub, args: dict):
+    if not HAS_SHOT:
+        return ("screenshot.py is not importable next to server.py - window capture disabled", True)
+    if args.get("list"):
+        wins = shotmod.list_roblox_windows()
+        if not wins:
+            return ("no visible Roblox windows found (is the game running?)", False)
+        lines = ["Roblox windows (largest first):"]
+        for w in wins:
+            lines.append("  #%d pid=%d %s %-20s rect=%s%s%s" % (
+                w["index"], w["pid"], w["kind"], (w["title"] or "(no title)")[:20],
+                w["rect"], " foreground" if w["foreground"] else "",
+                " hwnd=%d" % w["hwnd"]))
+        return ("\n".join(lines), False)
+    try:
+        res = shotmod.capture_by_args(
+            index=_toint(args.get("index")),
+            pid=_toint(args.get("pid")),
+            hwnd=_toint(args.get("hwnd")),
+            out=str(args.get("out") or ""),
+            focus=bool(args.get("focus")),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return ("screenshot failed: " + str(exc), True)
+    return ("captured %dx%d via %s -> %s (%d bytes)" % (
+        res["width"], res["height"], res["method"], res["path"], res["bytes"]), False)
+
+
 def tool_sessions(hub: Hub, args: dict):
     now = time.time()
     with hub.lock:
@@ -290,6 +332,8 @@ def dispatch(hub: Hub, name: str, args: dict):
         return tool_bridge_status(hub, args)
     if name == "sessions":
         return tool_sessions(hub, args)
+    if name == "screenshot":
+        return tool_screenshot(hub, args)
     return ("unknown tool: " + str(name), True)
 
 
@@ -354,6 +398,26 @@ TOOL_DEFS = [
         "name": "sessions",
         "description": "List all bridge sessions (multi-instance aware): id, live/idle, last sync age, sync count, state age.",
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "screenshot",
+        "description": (
+            "Capture the Roblox window to a PNG and return the saved path (open it with an image viewer). "
+            "Pass list=true to list candidate Roblox windows (index / pid / hwnd); 'index' picks one (largest first). "
+            "PrintWindow is tried first, screen BitBlt is the fallback; focus=true restores + raises the window first."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "list": {"type": "boolean", "description": "List Roblox windows instead of capturing."},
+                "index": {"type": "number", "description": "1-based window index from list (default: largest)."},
+                "pid": {"type": "number", "description": "Pick the window by process id."},
+                "hwnd": {"type": "number", "description": "Pick the window by hwnd."},
+                "out": {"type": "string", "description": "Output PNG path (default: shots/roblox_<timestamp>.png next to server.py)."},
+                "focus": {"type": "boolean", "description": "Restore + raise the window before capture (default false)."},
+            },
+            "required": [],
+        },
     },
 ]
 
@@ -444,6 +508,16 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/sessions":
             text, err = tool_sessions(self.hub, {})
             self._json(200, {"ok": not err, "text": text})
+        elif path == "/windows":
+            text, err = tool_screenshot(self.hub, {"list": True})
+            wins = shotmod.list_roblox_windows() if HAS_SHOT else []
+            self._json(200, {"ok": not err, "text": text, "windows": wins})
+        elif path == "/screenshot":
+            text, err = tool_screenshot(self.hub, {
+                "index": q("index"), "pid": q("pid"), "hwnd": q("hwnd"),
+                "out": q("out"), "focus": q("focus") == "1",
+            })
+            self._json(200 if not err else 500, {"ok": not err, "text": text})
         else:
             self._json(404, {"ok": False, "error": "unknown path"})
 

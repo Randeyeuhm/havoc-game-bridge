@@ -54,6 +54,7 @@ Then ask the agent to use the tools. Stop the in-game side any time with
 | `logs` | tail of the game console (print/warn mirrored) |
 | `bridge_status` | connectivity + counters |
 | `sessions` | list every bridge session (multi-instance aware): id, live/idle, last sync age, syncs, state age |
+| `screenshot` | capture the Roblox window to PNG (host-side window capturer); `list=true` lists windows, `index`/`pid`/`hwnd` pick one — lets the agent SEE the game |
 
 ## REST (for scripts / no-MCP clients)
 
@@ -63,7 +64,19 @@ Then ask the agent to use the tools. Stop the in-game side any time with
 - `GET /remotes?filter=&session=&limit=40&token=…` — remote-call log — same as the `remotes` tool
 - `GET /state?session=&token=…` — latest state snapshot — same as the `state` tool
 - `GET /sessions?token=…` — connected bridge sessions — same as the `sessions` tool
+- `GET /windows?token=…` — visible Roblox windows (hwnd / pid / kind / title / rect / foreground)
+- `GET /screenshot?token=…&index=1&out=&focus=1` — capture the Roblox window to PNG, returns the saved path (same as the `screenshot` tool)
 - **Auth:** every GET except `/health` requires the token (`?token=` or `X-Havoc-Token` header); requests carrying a foreign `Origin` are rejected (403) — a browser page cannot read the bridge.
+
+## Seeing the game: `screenshot.py` (host-side window capture)
+
+Executors expose no screenshot API (checked in both doc sets), so this is a **host-side** capturer — stdlib only, no pip installs. It scans every visible top-level window whose process is Roblox (player + studio), captures one, and writes a PNG:
+
+- **How:** `PrintWindow(PW_RENDERFULLCONTENT)` first (works while occluded on many setups); if that comes back black it falls back to a screen `BitBlt` of the window rect. Per-monitor DPI awareness is set so coordinates are physical pixels. Focus is never stolen (`focus=true` restores + raises first).
+- **Where:** default output `shots/roblox_<timestamp>.png` next to `server.py` (gitignored); override with `out`.
+- **MCP tool:** `screenshot` — `list=true` to enumerate windows, then `index`/`pid`/`hwnd` to pick one. Returns "captured WxH via printwindow -> path".
+- **CLI:** `python screenshot.py --list` / `python screenshot.py --index 2 --out shot.png` / `--focus`.
+- **Note:** multiple clients are listed largest-first; a black frame from PrintWindow is auto-retried via the visible screen path, so keep the game window visible if captures look dark.
 
 ## Game-side kit (bridge v2.5.0, in-game script)
 

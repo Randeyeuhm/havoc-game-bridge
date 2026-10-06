@@ -245,6 +245,37 @@ def main():
         if h.get("eval_ms_last") is None or h.get("eval_ms_avg") is None:
             problems.append("health missing eval_ms fields")
 
+        # 6e) screenshot: window scan (always available) + capture (if Roblox runs here)
+        def http_get_code(path):
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{PORT}{path}", timeout=30) as r:
+                    return r.status, json.loads(r.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                try:
+                    return e.code, json.loads(e.read().decode("utf-8"))
+                except Exception:
+                    return e.code, {}
+
+        sc, body = http_get_code(f"/windows?token={TOKEN}")
+        if sc != 200 or "windows" not in body:
+            problems.append(f"/windows bad response: {sc} {body}")
+        else:
+            wins = body.get("windows") or []
+            if wins:
+                shot_path = os.path.join(HERE, "_smoke_shot.png")
+                sc2, body2 = http_get_code(f"/screenshot?token={TOKEN}&out={urllib.request.quote(shot_path)}")
+                if sc2 != 200 or body2.get("ok") is not True:
+                    problems.append(f"/screenshot failed: {sc2} {body2}")
+                elif not (os.path.isfile(shot_path) and os.path.getsize(shot_path) > 1000):
+                    problems.append("/screenshot produced no usable PNG")
+                try:
+                    os.remove(shot_path)
+                except OSError:
+                    pass
+        sc3, body3 = http_get_code(f"/screenshot?token={TOKEN}&hwnd=99999999")
+        if body3.get("ok") is not False:
+            problems.append(f"/screenshot with bad hwnd should fail gracefully: {sc3} {body3}")
+
         # ---- SECOND session joins ----
         b = FakeGame("jobB|Bob", executor="smoke2").start()
         if wait_health(lambda h: h.get("live_sessions") == 2) is None:
