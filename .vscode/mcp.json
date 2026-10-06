@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "game-bridge": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["${workspaceFolder}/server.py"]
+    }
+  }
+}

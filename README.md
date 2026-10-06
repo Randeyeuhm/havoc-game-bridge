@@ -11,11 +11,15 @@ Python **stdlib only** — no pip installs. Works with any executor that has an 
 function (`request` / `http_request`) and a `__namecall` hook for the remote log
 (Volt has both; without the hook everything else still works).
 
+> Extracted from [`havoc-hub`](https://github.com/Randeyeuhm/havoc-hub) (history
+> preserved). The in-game side (`bridge.luau`) lives in that repo.
+
 ## Setup (2 steps)
 
 1. **Start the MCP server** — VS Code: Command Palette → **MCP: List Servers** →
-   `game-bridge` → **Start**. (Auto-start config lives in `.vscode/mcp.json`,
-   which is local-only; on a fresh machine create it as:)
+   `game-bridge` → **Start**. The auto-start config ships in `.vscode/mcp.json`
+   of this repo (portable, uses `${workspaceFolder}`), so opening this folder in
+   VS Code is enough:
 
    ```json
    {
@@ -23,13 +27,13 @@ function (`request` / `http_request`) and a `__namecall` hook for the remote log
        "game-bridge": {
          "type": "stdio",
          "command": "python",
-         "args": ["${workspaceFolder}/tools/game-bridge/server.py"]
+         "args": ["${workspaceFolder}/server.py"]
        }
      }
    }
    ```
 
-   Manual run also works: `python tools/game-bridge/server.py`
+   Manual run also works: `python server.py`
 
 2. **Start the in-game bridge** — in the game (Volt), execute:
 
@@ -86,6 +90,6 @@ Then ask the agent to use the tools. Stop the in-game side any time with
 ## Test
 
 ```powershell
-python tools/game-bridge/server.py --port 8799 --token smoke   # optional manual
-python tools/game-bridge/smoke_test.py                          # full end-to-end
+python server.py --port 8799 --token smoke   # optional manual
+python smoke_test.py                         # full end-to-end
 ```
