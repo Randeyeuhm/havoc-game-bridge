@@ -78,11 +78,17 @@ Executors expose no screenshot API (checked in both doc sets), so this is a **ho
 - **CLI:** `python screenshot.py --list` / `python screenshot.py --index 2 --out shot.png` / `--focus`.
 - **Note:** multiple clients are listed largest-first; a black frame from PrintWindow is auto-retried via the visible screen path, so keep the game window visible if captures look dark.
 
-## Game-side kit (bridge v2.5.0, in-game script)
+## Game-side kit (bridge v2.6.0, in-game script)
 
+- **Lazy features + per-game config** — nothing optional arms at boot. Four features resolve per game (hard defaults → built-in profiles → user config `havoc_db/bridge_config.json`: `profiles.all` then `profiles["<PlaceId>"]`):
+  - `spy` — outbound namecall + inbound listeners + remote inventory (default off; on for F3X 7797017666, `auto` for Oaklands)
+  - `shield` — Oaklands HAX shield: HAX-report drop guard + `_Types` scanner kill. **Auto-arms when the hub script is not loaded**; adopts the hub's shield when it is (`state.shield` shows source / scanner / dropped)
+  - `acBypass` — Adonis detect + detector zombify (default `auto`; an unverified bypass holds `spy`)
+  - `persist` — teleport self-requeue (default **off** since v2.6.0)
+  - API: `HAVOC_BRIDGE.feature("spy", true)` saves per game (`{save=false}` = session only), `HAVOC_BRIDGE.featureList()`, `HAVOC_BRIDGE.reloadConfig()`. Guards encode the per-game limits — Oaklands spy stays held until a shield is active.
 - **Spy pack** — `HAVOC_BRIDGE.spy.byName(name, limit)` (filter the ring), `spy.dump([path], [nameFilter])` (**writes the ring to a workspace file** — read it from disk, no console paste; binary strings come out hexed), `spy.hex(s)` for buffer payloads, `raw(i)` / `replay(i)` as before.
 - **Watch** — `HAVOC_BRIDGE.watch(instanceOrPath, seconds, interval)` samples properties + attributes and returns a diff log ("what changes when I do X"). Blocks the call: give the eval a matching `timeout_ms`.
-- **Teleport persistence** — the bridge re-queues itself (`queueonteleport`) so it survives server hops (lobby → match, races). Disable with `getgenv().HAVOC_BRIDGE_PERSIST = false`; status in `HAVOC_BRIDGE.persist`.
+- **Teleport persistence** — the `persist` feature (default **off** since v2.6.0): `HAVOC_BRIDGE.feature("persist", true)` enables it per game (or force with `getgenv().HAVOC_BRIDGE_PERSIST = true`); the queued payload self-cancels if disabled before it fires. Status in `HAVOC_BRIDGE.persist`.
 - **Console + async rings** — `HAVOC_BRIDGE.console` (last 150 print/warn/[bridge] lines) and `HAVOC_BRIDGE.asyncErrors` (errors from eval-spawned `task.spawn/defer/delay`, zero writes to the real task table — shadow-task prefix).
 - **Eval hardening** — `evalResults` (last 10 results, recoverable if a post is lost), `evalsDone` / `lastExecMs` / `droppedResults` counters, chunk name `@bridge_eval` in error traces.
 - **Adaptive polling** — fast ticks (~0.12 s) for a few seconds after any command → eval round trips ~0.3 s while active, 0.45 s idle.

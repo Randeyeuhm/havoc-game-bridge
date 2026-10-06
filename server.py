@@ -29,7 +29,7 @@ except Exception:  # missing module / non-Windows host
     shotmod = None
     HAS_SHOT = False
 
-VERSION = "bridge-1.2.0"
+VERSION = "bridge-1.2.1"
 CONNECT_WINDOW_S = 5.0
 
 
@@ -177,6 +177,22 @@ def tool_state(hub: Hub, args: dict):
     text = json.dumps(st, indent=2, ensure_ascii=False)
     age = time.time() - at if at else -1
     header = f"# state [{sid}] (uploaded {age:.1f}s ago, connected={conn}){extra}\n"
+    # bridge-v2.6.0: surface the feature table in the header so it is never
+    # lost to the truncation cap below (state payloads can be huge)
+    if isinstance(st, dict):
+        feats = st.get("features")
+        if isinstance(feats, dict):
+            parts = []
+            for name in ("spy", "shield", "acBypass", "persist"):
+                f = feats.get(name)
+                if isinstance(f, dict):
+                    parts.append(f"{name}={f.get('mode')}:{'on' if f.get('active') else 'off'}")
+            if parts:
+                line = "# features: " + " ".join(parts)
+                sh = st.get("shield")
+                if isinstance(sh, dict) and sh.get("active"):
+                    line += f"  (shield: {sh.get('source')}/{sh.get('scanner')}, dropped={sh.get('dropped')})"
+                header += line + "\n"
     if len(text) > 24000:
         text = text[:24000] + "\n... (truncated - use run_luau for targeted slices)"
     return (header + text, False)
