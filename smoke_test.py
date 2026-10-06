@@ -189,6 +189,20 @@ def main():
         if code_rest not in a.executed:
             problems.append("/eval code never reached client A")
 
+        # 6b) REST reads: /logs /remotes /state /sessions
+        def get_text(path):
+            with urllib.request.urlopen(f"http://127.0.0.1:{PORT}{path}", timeout=5) as r:
+                return json.loads(r.read().decode("utf-8")).get("text", "")
+
+        if "[smoke] hello from jobA|Alice" not in get_text("/logs?limit=10"):
+            problems.append("/logs REST missing console line")
+        if "WeaponFired" not in get_text("/remotes?filter=weapon&limit=5"):
+            problems.append("/remotes REST missing entry")
+        if "fake" not in get_text("/state?session=Alice"):
+            problems.append("/state REST missing state")
+        if "Alice" not in get_text("/sessions"):
+            problems.append("/sessions REST missing session")
+
         # ---- SECOND session joins ----
         b = FakeGame("jobB|Bob", executor="smoke2").start()
         if wait_health(lambda h: h.get("live_sessions") == 2) is None:

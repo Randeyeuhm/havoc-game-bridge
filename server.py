@@ -20,8 +20,9 @@ import time
 import uuid
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 
-VERSION = "bridge-1.1.0"
+VERSION = "bridge-1.1.1"
 CONNECT_WINDOW_S = 5.0
 
 
@@ -358,7 +359,14 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        path = self.path.split("?")[0]
+        parsed = urlsplit(self.path)
+        path = parsed.path
+        qs = parse_qs(parsed.query)
+
+        def q(name, default=""):
+            vals = qs.get(name) or []
+            return vals[0] if vals else default
+
         if path == "/health":
             hub = self.hub
             now = time.time()
@@ -384,6 +392,22 @@ class Handler(BaseHTTPRequestHandler):
                     "sessions": rows,
                 }
             self._json(200, info)
+        elif path == "/logs":
+            limit = q("limit", "60")
+            text, err = tool_logs(self.hub, {"limit": int(limit) if limit.isdigit() else 60,
+                                             "session": q("session")})
+            self._json(200, {"ok": not err, "text": text})
+        elif path == "/remotes":
+            limit = q("limit", "40")
+            text, err = tool_remotes(self.hub, {"limit": int(limit) if limit.isdigit() else 40,
+                                                "filter": q("filter"), "session": q("session")})
+            self._json(200, {"ok": not err, "text": text})
+        elif path == "/state":
+            text, err = tool_state(self.hub, {"session": q("session")})
+            self._json(200, {"ok": not err, "text": text})
+        elif path == "/sessions":
+            text, err = tool_sessions(self.hub, {})
+            self._json(200, {"ok": not err, "text": text})
         else:
             self._json(404, {"ok": False, "error": "unknown path"})
 

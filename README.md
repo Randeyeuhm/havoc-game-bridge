@@ -59,6 +59,10 @@ Then ask the agent to use the tools. Stop the in-game side any time with
 
 - `GET /health` — `ok`, `connected`, `last_sync_age_s`, `syncs`, `queued_cmds`, `live_sessions`, `sessions[]`
 - `POST /eval` — body `{"token": "...", "code": "...", "timeout_ms": 20000, "session": "Alice"}` — same code path as `run_luau`; `session` targets one client when several are live
+- `GET /logs?limit=60&session=` — tail of the mirrored console (print/warn) — same as the `logs` tool
+- `GET /remotes?filter=&session=&limit=40` — remote-call log — same as the `remotes` tool
+- `GET /state?session=` — latest state snapshot — same as the `state` tool
+- `GET /sessions` — connected bridge sessions — same as the `sessions` tool
 
 ## Notes / troubleshooting
 
